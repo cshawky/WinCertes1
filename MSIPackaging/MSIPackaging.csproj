@@ -126,6 +126,21 @@
   <Import Project="..\packages\WixSharp.1.8.0\build\WixSharp.targets" Condition="Exists('..\packages\WixSharp.1.8.0\build\WixSharp.targets')" />
   <UsingTask AssemblyFile="$(SolutionDir)packages\WixSharp.1.8.0\build\SetEnvVar.dll" TaskName="SetEnvVar" />
   <PropertyGroup>
-    <PostBuildEvent>"$(TargetPath)" "$(SolutionDir)"</PostBuildEvent>
+    <PostBuildEvent>SET WINCERTESVER=1.4.0
+SET PKG=WinCertes2Install_%25WINCERTESVER%25
+ECHO Creating MSI package...
+"$(TargetPath)" "$(SolutionDir)"
+MKDIR "%25PKG%25"
+echo Copy MSI package to Installer folder %25PKG%25
+xcopy /d /y "$(TargetDir)$(SolutionName).msi" "%25PKG%25"
+xcopy /d /y /S "$(SolutionDir)WinCertes\Samples\*.*" "%25PKG%25"
+xcopy /d /y "$(SolutionDir)*.md" "%25PKG%25\"
+xcopy /d /y "$(SolutionDir)LICENSE" "%25PKG%25\"
+SET ZIP=C:\Program Files\7-Zip\7z.exe
+"%25ZIP%25" a $(SolutionDir)Installers\%25PKG%25.zip "%25PKG%25"
+
+
+
+</PostBuildEvent>
   </PropertyGroup>
 </Project>
