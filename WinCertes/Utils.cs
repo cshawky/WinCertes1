@@ -33,12 +33,13 @@ namespace WinCertes
         /// </summary>
         /// <param name="pfxFullPath"></param>
         /// <param name="pfxPassword"></param>
-        public AuthenticatedPFX(string pfxFullPath, string pfxPassword, string pemCertPath, string pemKeyPath)
+        public AuthenticatedPFX(string pfxFullPath, string pfxPassword, string pemCertPath, string pemKeyPath, string pemAllPath)
         {
             PfxFullPath = pfxFullPath;
             PfxPassword = pfxPassword;
             PemCertPath = pemCertPath;
             PemKeyPath = pemKeyPath;
+            PemFullPath = pemAllPath;
         }
 
         /// <summary>
@@ -60,6 +61,11 @@ namespace WinCertes
         /// Full path to the PEM private key
         /// </summary>
         public string PemKeyPath { get; private set; }
+
+        /// <summary>
+        /// Full path to the PEM private+public key
+        /// </summary>
+        public string PemFullPath { get; private set; }
     }
 
     /// <summary>
@@ -99,7 +105,8 @@ namespace WinCertes
                 myCommand.Parameters.Add(cerParam);
                 CommandParameter keyParam = new CommandParameter("key", pfx.PemKeyPath);
                 myCommand.Parameters.Add(keyParam);
-              // add the created Command to the pipeline
+
+                // add the created Command to the pipeline
                 pipeline.Commands.Add(myCommand);
 
                 // and we invoke it

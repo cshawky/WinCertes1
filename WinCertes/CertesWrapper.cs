@@ -34,7 +34,7 @@ namespace WinCertes
         private WinCertesOptions _options;
 
         /// <summary>
-        /// Initializes Certes library context using ServiceUri, AccountKey
+        /// Initializes Certes library context
         /// </summary>
         private void InitCertes()
         {
@@ -46,13 +46,14 @@ namespace WinCertes
         /// </summary>
         /// <param name="serviceUri">The ACME service URI (endin in /directory). If null, defaults to Let's encrypt</param>
         /// <param name="accountEmail">The email address to be registered within the ACME account. If null, no email will be used</param>
-        internal CertesWrapper()
+        public CertesWrapper()
         {
+            // Just use the settings already prepared nicely
             _options = Program._winCertesOptions;
 
+            // Todo - Encrypt this in registry, don't display
+            logger.Debug($"PFX password will be: {_options.PfxPassword}");
             logger.Debug($"Uri: {_options.ServiceUri.ToString()}");
-            // Todo - Encrypt this in registry
-            //logger.Debug($"PFX password will be: {_options.PfxPassword}");
 
             // Basic check of private key
             string key = _options.AccountKey;
@@ -301,7 +302,7 @@ namespace WinCertes
         /// <summary>
         /// Retrieves the certificate from the ACME service. This method also generates the key and the CSR.
         /// </summary>
-        /// <param name="domains">Full Domain list</param>
+        /// <param name="domains">Full Domain list for constructed the CN</param>
         /// <param name="pathForPfx">Path where the resulting PFX/PKCS#12 file will be generated</param>
         /// <param name="pfxFriendlyName">Friendly name for the resulting PFX/PKCS#12</param>
         /// <param name="writePEM">Export all certificates</param>
@@ -341,7 +342,7 @@ namespace WinCertes
                 string pfxName = fileName + ".pfx";
                 string cerPath = fileName + ".cer";
                 string keyPath = fileName + ".key";
-                string pemPath = fileName + ".pem";
+                string pemAllPath = fileName + ".pem";
 
                 // We write the PFX/PKCS#12 to file
                 System.IO.File.WriteAllBytes(pfxName, pfxBytes);
@@ -350,9 +351,9 @@ namespace WinCertes
                 // We write the PEMs to corresponding files
                 System.IO.File.WriteAllText(cerPath, cer);
                 System.IO.File.WriteAllText(keyPath, key);
-                System.IO.File.WriteAllText(pemPath, pem);
+                System.IO.File.WriteAllText(pemAllPath, pem);
 
-                AuthenticatedPFX authPFX = new AuthenticatedPFX(pfxName, _options.PfxPassword, cerPath, keyPath);
+                AuthenticatedPFX authPFX = new AuthenticatedPFX(pfxName, _options.PfxPassword, cerPath, keyPath, pemAllPath);
 
                 return authPFX;
             }
