@@ -2,7 +2,6 @@
 using Certes.Acme;
 using Certes.Acme.Resource;
 using NLog;
-using Org.BouncyCastle.Asn1.X509;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -26,7 +25,7 @@ namespace WinCertes
     /// CertesWrapper class: a wrapper around Certes library, that simplifies handling ACME requests in the context of WinCertes
     /// </summary>
     /// <seealso cref="Certes"/>
-    internal class CertesWrapper
+    public class CertesWrapper
     {
         private static readonly ILogger logger = Program._logger; // LogManager.GetLogger("WinCertes.CertesWrapper");
         private AcmeContext _acme;
@@ -70,7 +69,6 @@ namespace WinCertes
             _httpClient.DefaultRequestHeaders.Add("User-Agent", $"WinCertes/{winCertesAssembly.Version.ToString()} (Certes/{certesAssembly.Version.ToString()}; {Environment.OSVersion.VersionString})");
         }
 
-        /// <summary>
         /// Fetches the useful error messages from within the exceptions stack within Certes
         /// </summary>
         /// <param name="exp">the exception to process</param>
@@ -304,21 +302,20 @@ namespace WinCertes
         /// Retrieves the certificate from the ACME service. This method also generates the key and the CSR.
         /// </summary>
         /// <param name="domains">Full Domain list</param>
-        /// <param name="fullPathForPfx">The full file path where the resulting PFX/PKCS#12 file will be generated</param>
+        /// <param name="pathForPfx">Path where the resulting PFX/PKCS#12 file will be generated</param>
         /// <param name="pfxFriendlyName">Friendly name for the resulting PFX/PKCS#12</param>
         /// <param name="writePEM">Export all certificates</param>
         /// <returns>The name of the generated PFX/PKCS#12 file, or null in case of error</returns>
-        public async Task<string> RetrieveCertificate(IList<string> domains, string fullPathForPfx, string pfxFriendlyName, bool writePEM = false)
+        public async Task<AuthenticatedPFX> RetrieveCertificate(IList<string> domains, string pathForPfx, string pfxFriendlyName, bool writePEM = false)
         {
             try {
-                string pathForPfx = Path.GetDirectoryName(fullPathForPfx);
                 if (_orderCtx == null) throw new Exception("Do not call RetrieveCertificate before RegisterNewOrderAndVerify");
                 if (!System.IO.Directory.Exists(pathForPfx)) throw new Exception("Directory for PFX writing do not exists");
 
                 InitCertes();
 
                 // Let's generate a new key (RSA is good enough IMHO)
-                IKey certKey = KeyFactory.NewKey(KeyAlgorithm.RS256);
+                IKey certKey = KeyFactory.FromPem(Utils.GenerateRSAKeyAsPEM(2048));
                 // Then let's generate the CSR
                 var csr = await _orderCtx.CreateCsr(certKey);
                 csr.AddName("CN", domains[0]);
@@ -330,41 +327,37 @@ namespace WinCertes
                 CertificateChain certChain = await _orderCtx.Download();
                 _options.CertificateGenerated = true;
                 // .cer: Full Certificate with Private Key. e.g. Visual SVN
-                string cer = certChain.ToPem(certKey);
+                var cer = certChain.ToPem(certKey);
                 // .pem: Full Certificate without Private Key e.g. hMailServer
-                string pem = certChain.ToPem();
-                // .pkey: Private key in separate PEM file.
-                string pkey = certKey.ToPem();
-
-                var fileName = Path.GetFileNameWithoutExtension(fullPathForPfx);
-                string pfxName = fileName + ".pfx";
-                string pfxPath = pathForPfx + "\\" + pfxName;
-                string cerPath = pathForPfx + "\\" + fileName + ".cer";
-                string pemPath = pathForPfx + "\\" + fileName + ".pem";
-                string pkeyPath = pathForPfx + "\\" + fileName + ".pkey";
+                var pem = certChain.ToPem();
+                // .key: Private key in separate PEM file.
+                var key = certKey.ToPem();
 
                 // We build the PFX/PKCS#12
                 var pfx = certChain.ToPfx(certKey);
                 pfx.AddIssuers(GetCACertChainFromStore());
                 var pfxBytes = pfx.Build(pfxFriendlyName, _options.PfxPassword);
+                var fileName = pathForPfx + "\\" + Guid.NewGuid().ToString();
+                string pfxName = fileName + ".pfx";
+                string cerPath = fileName + ".cer";
+                string keyPath = fileName + ".key";
+                string pemPath = fileName + ".pem";
 
                 // We write the PFX/PKCS#12 to file
-                System.IO.File.WriteAllBytes(fullPathForPfx, pfxBytes);
-                logger.Info($"Output complete certificate PFX. The certificate is in {fullPathForPfx}");
+                System.IO.File.WriteAllBytes(pfxName, pfxBytes);
+                logger.Info($"Retrieved certificate from the CA. The certificate is in {pfxName}");
 
-                if (writePEM)
-                {
-                    System.IO.File.WriteAllText(cerPath, cer);
-                    logger.Info($"Output complete certificate PEM. The certificate is in {cerPath}");
+                // We write the PEMs to corresponding files
+                System.IO.File.WriteAllText(cerPath, cer);
+                System.IO.File.WriteAllText(keyPath, key);
+                System.IO.File.WriteAllText(pemPath, pem);
 
-                    System.IO.File.WriteAllText(pemPath, pem);
-                    logger.Info($"Output public certificate PEM. The certificate is in {pemPath}");
+                AuthenticatedPFX authPFX = new AuthenticatedPFX(pfxName, _options.PfxPassword, cerPath, keyPath);
 
-                    System.IO.File.WriteAllText(pkeyPath, pkey);
-                    logger.Info($"Output Private certificate PEM. The certificate is in {pkeyPath}");
-                }
-                return pfxName;
-            } catch (Exception exp) {
+                return authPFX;
+            }
+            catch (Exception exp)
+            {
                 logger.Error($"Failed to retrieve certificate from CA: {ProcessCertesException(exp)}");
                 _options.CertificateGenerated = false;
                 return null;

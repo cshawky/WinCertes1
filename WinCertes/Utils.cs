@@ -2,6 +2,11 @@
 using NLog;
 using NLog.Config;
 using NLog.Targets;
+using Org.BouncyCastle.Crypto;
+using Org.BouncyCastle.Crypto.Parameters;
+using Org.BouncyCastle.Math;
+using Org.BouncyCastle.OpenSsl;
+using Org.BouncyCastle.Security;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -14,7 +19,6 @@ using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Windows;
 using TS = Microsoft.Win32.TaskScheduler;
 
 namespace WinCertes
@@ -29,10 +33,12 @@ namespace WinCertes
         /// </summary>
         /// <param name="pfxFullPath"></param>
         /// <param name="pfxPassword"></param>
-        public AuthenticatedPFX(string pfxFullPath, string pfxPassword)
+        public AuthenticatedPFX(string pfxFullPath, string pfxPassword, string pemCertPath, string pemKeyPath)
         {
             PfxFullPath = pfxFullPath;
             PfxPassword = pfxPassword;
+            PemCertPath = pemCertPath;
+            PemKeyPath = pemKeyPath;
         }
 
         /// <summary>
@@ -44,6 +50,16 @@ namespace WinCertes
         /// PFX password
         /// </summary>
         public string PfxPassword { get; set; }
+
+        /// <summary>
+        /// Full path to the PEM certificate
+        /// </summary>
+        public string PemCertPath { get; private set; }
+
+        /// <summary>
+        /// Full path to the PEM private key
+        /// </summary>
+        public string PemKeyPath { get; private set; }
     }
 
     /// <summary>
@@ -79,8 +95,11 @@ namespace WinCertes
                 myCommand.Parameters.Add(pfxParam);
                 CommandParameter pfxPassParam = new CommandParameter("pfxPassword", pfx.PfxPassword);
                 myCommand.Parameters.Add(pfxPassParam);
-
-                // add the created Command to the pipeline
+                CommandParameter cerParam = new CommandParameter("cer", pfx.PemCertPath);
+                myCommand.Parameters.Add(cerParam);
+                CommandParameter keyParam = new CommandParameter("key", pfx.PemKeyPath);
+                myCommand.Parameters.Add(keyParam);
+              // add the created Command to the pipeline
                 pipeline.Commands.Add(myCommand);
 
                 // and we invoke it
@@ -106,7 +125,6 @@ namespace WinCertes
             if (siteName == null) return false;
             try
             {
-                bool foundBinding = false;
                 ServerManager serverMgr = new ServerManager();
                 Site site = serverMgr.Sites[siteName];
                 if (site == null)
@@ -114,31 +132,63 @@ namespace WinCertes
                     logger.Error($"Could not find IIS site {siteName}");
                     return false;
                 }
-                foreach (Binding binding in site.Bindings)
+                foreach (string sanDns in ParseSubjectAlternativeName(certificate))
                 {
-                    if (binding.Protocol == "https")
+                    bool foundBinding = false;
+                    foreach (Binding binding in site.Bindings)
                     {
-                        binding.CertificateHash = certificate.GetCertHash();
-                        binding.CertificateStoreName = "MY";
-                        foundBinding = true;
+                        if (binding.Protocol == "https")
+                        {
+                            if (binding.Host.Equals(sanDns, StringComparison.OrdinalIgnoreCase))
+                            {
+                                binding.CertificateHash = certificate.GetCertHash();
+                                binding.CertificateStoreName = "MY";
+                                foundBinding = true;
+                            }
+                        }
+                    }
+                    if (!foundBinding)
+                    {
+                        Binding binding = site.Bindings.Add("*:443:" + sanDns, certificate.GetCertHash(), "MY");
+                        binding.Protocol = "https";
                     }
                 }
 
-                if (!foundBinding)
-                {
-                    Binding binding = site.Bindings.Add("*:443:", certificate.GetCertHash(), "MY");
-                    binding.Protocol = "https";
-                }
- 
-                site.ApplicationDefaults.EnabledProtocols = "http,https";
+                if (site.ApplicationDefaults.EnabledProtocols.Split(',').Contains("http"))
+                    site.ApplicationDefaults.EnabledProtocols = "http,https";
+                else
+                    site.ApplicationDefaults.EnabledProtocols = "https";
                 serverMgr.CommitChanges();
                 return true;
             }
             catch (Exception e)
             {
-                logger.Error(e,$"Could not bind certificate to site {siteName}: {e.Message}");
+                logger.Error(e, $"Could not bind certificate to site {siteName}: {e.Message}");
                 return false;
             }
+        }
+
+        private static List<string> ParseSubjectAlternativeName(X509Certificate2 cert)
+        {
+            var result = new List<string>();
+            var subjectAlternativeName = cert.Extensions.Cast<X509Extension>()
+                                                .Where(n => n.Oid.FriendlyName.Equals("Subject Alternative Name", StringComparison.Ordinal))
+                                                .Select(n => new AsnEncodedData(n.Oid, n.RawData))
+                                                .Select(n => n.Format(true))
+                                                .FirstOrDefault();
+            if (subjectAlternativeName != null)
+            {
+                var alternativeNames = subjectAlternativeName.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+                foreach (var alternativeName in alternativeNames)
+                {
+                    var groups = Regex.Match(alternativeName, @"^DNS Name=(.*)").Groups;
+                    if (groups.Count > 0 && !String.IsNullOrEmpty(groups[1].Value))
+                    {
+                        result.Add(groups[1].Value);
+                    }
+                }
+            }
+            return result;
         }
 
         /// <summary>
@@ -153,7 +203,7 @@ namespace WinCertes
         }
 
         /// <summary>
-        /// Attempt elevation if nto running as administrator
+        /// Attempt elevation if not running as administrator
         /// </summary>
         public static void AdminRelauncher()
         {
@@ -181,55 +231,28 @@ namespace WinCertes
         /// Configures the console logger
         /// </summary>
         /// <param name="logPath">the path to the directory where to store the log files</param>
-        public static void ConfigureLogger(string logPath, string[] args)
+        public static void ConfigureLogger(string logPath)
         {
-            if (logPath == null)
-                logPath = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData) + "\\WinCertes";
 
             var config = new LoggingConfiguration();
-            LogLevel level = LogLevel.Info;
-            if (args != null) foreach (var arg in args) if (arg.ToString().IndexOf("debug", StringComparison.InvariantCultureIgnoreCase) > 0) level = LogLevel.Debug;
+
 #if DEBUG
-            config.LoggingRules.Add(new LoggingRule("*", level, new ColoredConsoleTarget { Name = "WinCertes Console", Layout = "[DEBUG] ${message}${onexception:${newline}${exception:format=tostring}}" }));
-#else
-            config.LoggingRules.Add(new LoggingRule("*", level, new ColoredConsoleTarget { Name = "WinCertes Console", Layout = "${message}" }));
+            config.LoggingRules.Add(new LoggingRule("*", LogLevel.Debug, new ColoredConsoleTarget { Layout = "[DEBUG] ${message}${onexception:${newline}${exception:format=tostring}}" }));
 #endif
+            config.LoggingRules.Add(new LoggingRule("*", LogLevel.Info, new ColoredConsoleTarget { Layout = "${message}" }));
 
             config.LoggingRules.Add(
-                new LoggingRule("*", level, new FileTarget
+                new LoggingRule("*", LogLevel.Info, new FileTarget
                 {
-                    Name = "WinCertes",
                     FileName = logPath + "\\wincertes.log",
                     ArchiveAboveSize = 500000,
                     ArchiveFileName = logPath + "\\wincertes.old.log",
-                    MaxArchiveFiles = 4,
-                    ArchiveOldFileOnStartup = true,
-                    Layout = "${longdate}|${level:uppercase=true}| ${message}${onexception:${newline}${exception:format=tostring}}"
+                    MaxArchiveFiles = 1,
+                    ArchiveOldFileOnStartup = false,
+                    Layout = "${longdate}|${level:uppercase=true}|${message}${onexception:${newline}${exception:format=tostring}}"
                 }));
 
             LogManager.Configuration = config;
-        }
-
-        /// <summary>
-        /// Change the log level for NLog after the command line parameters have been read
-        /// </summary>
-        /// <param name="logLevel">The new log level</param>
-        /// <param name="regex">Regular expression for Log target name. e.g. "*"</param>
-        public static void SetLogLevel(LogLevel logLevel, string regex = "wincertes*")
-        {
-            IList<NLog.Config.LoggingRule> rules = LogManager.Configuration.LoggingRules;
-            Regex validator = new Regex(regex, RegexOptions.IgnoreCase);
-            //foreach (var rule in rules.Where(x => validator.IsMatch(x.Targets[0].Name)))
-            foreach (var rule in rules)
-            {
-                if (validator.IsMatch(rule.Targets[0].Name))
-                {
-                    if (!rule.IsLoggingEnabledForLevel(logLevel))
-                    {
-                        rule.EnableLoggingForLevel(logLevel);
-                    }
-                }
-            }
         }
 
         /// <summary>
@@ -237,7 +260,7 @@ namespace WinCertes
         /// </summary>
         /// <param name="domains"></param>
         /// <param name="taskName"></param>
-        public static void CreateScheduledTask(string taskName, List<string> domains, bool extra)
+        public static void CreateScheduledTask(string taskName, List<string> domains, int extra)
         {
             if (taskName == null) return;
             try
@@ -255,8 +278,8 @@ namespace WinCertes
                     td.Triggers.Add(new TS.DailyTrigger { DaysInterval = 2 });
                     String extraOpt = "";
 
-                    if (extra)
-                        extraOpt = "--extra ";
+                    if (extra > -1)
+                        extraOpt = "--extra=" + extra.ToString() + " ";
                     // Create an action that will launch Notepad whenever the trigger fires
                     td.Actions.Add(new TS.ExecAction("WinCertes.exe", extraOpt + "-d " + String.Join(" -d ", domains), Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)));
 
@@ -361,9 +384,7 @@ namespace WinCertes
             wDomains.Sort();
             string friendly = wDomains[0].Replace(@"*", "").Replace("-", "").Replace(":", "").Replace(".", "");
             friendly += "0000000000000000";
-            friendly = friendly.Substring(0, 16);
-            Program._logger.Info("Friendly name: {0}", friendly);
-            return friendly;
+            return friendly.Substring(0, 16);
         }
 
         /// <summary>
@@ -392,6 +413,29 @@ namespace WinCertes
             catch (Exception e)
             {
                 logger.Error($"Could not retrieve certificate from store: {e.Message}");
+                return null;
+            }
+        }
+
+        public static string GenerateRSAKeyAsPEM(int keySize)
+        {
+            try
+            {
+                IAsymmetricCipherKeyPairGenerator generator = GeneratorUtilities.GetKeyPairGenerator("RSA");
+                RsaKeyGenerationParameters generatorParams = new RsaKeyGenerationParameters(
+                                BigInteger.ValueOf(0x10001), new SecureRandom(), keySize, 12);
+                generator.Init(generatorParams);
+                AsymmetricCipherKeyPair keyPair = generator.GenerateKeyPair();
+                using (StringWriter sw = new StringWriter())
+                {
+                    PemWriter pemWriter = new PemWriter(sw);
+                    pemWriter.WriteObject(keyPair);
+                    return sw.ToString();
+                }
+            }
+            catch (Exception e)
+            {
+                logger.Error($"Could not generate new key pair: {e.Message}");
                 return null;
             }
         }

@@ -31,14 +31,19 @@ namespace WinCertes.ChallengeValidator
         {
             try
             {
-                if (!Uri.IsWellFormedUriString(_options.DNSServerURL, UriKind.Absolute)) 
+                var DNSServerURL = _options.DNSServerURL;
+                var DNSServerUser = _options.DNSServerUser;
+                var DNSServerKey = _options.DNSServerKey;
+                var DNSServerSubDomain = _options.DNSServerSubDomain;
+
+                if (!Uri.IsWellFormedUriString(DNSServerURL, UriKind.Absolute)) 
                     return false;
                 HttpClient client = new HttpClient();
-                var content = new StringContent($"{{ \"subdomain\": \"{_options.DNSServerSubDomain}\", \"txt\": \"{dnsKeyValue}\" }}", Encoding.UTF8, "application/json");
-                content.Headers.Add("X-Api-User", _options.DNSServerUser);
-                content.Headers.Add("X-Api-Key", _options.DNSServerKey);
+                var content = new StringContent($"{{ \"subdomain\": \"{DNSServerSubDomain}\", \"txt\": \"{dnsKeyValue}\" }}", Encoding.UTF8, "application/json");
+                content.Headers.Add("X-Api-User", DNSServerUser);
+                content.Headers.Add("X-Api-Key", DNSServerKey);
 
-                var response = client.PostAsync(_options.DNSServerURL, content).Result;
+                var response = client.PostAsync(DNSServerURL, content).Result;
                 return (response.StatusCode == System.Net.HttpStatusCode.OK);
             } 
             catch (Exception exp) {

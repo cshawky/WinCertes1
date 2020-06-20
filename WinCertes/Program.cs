@@ -4,10 +4,9 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Management.Automation;
-using System.Runtime.CompilerServices;
+using System.Security.AccessControl;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using WinCertes.ChallengeValidator;
@@ -34,7 +33,8 @@ namespace WinCertes
     {
         internal static readonly ILogger _logger = LogManager.GetLogger("WinCertes");
         internal static CertesWrapper _certesWrapper;
-        internal static string _winCertesPath = Environment.CurrentDirectory + "\\Certificates";
+        internal static string _winCertesPath;
+        private static string _certTmpPath;
         internal static string _logPath = Environment.CurrentDirectory + "\\Logs";
 
         /// <summary>
@@ -49,134 +49,6 @@ namespace WinCertes
                 _logger.Error("Exit Code({0})", exitCode);
             }
             return exitCode;
-        }
-
-        /// <summary>
-        /// Main programme
-        /// </summary>
-        /// <param name="args">WinCertes command line arguments</param>
-        /// <returns>Zero if successul, error code otherwise</returns>
-        private static int Main(string[] args)
-        {
-            // WinCertes Certificate path...
-            InitWinCertesDirectoryPath(_winCertesPath);
-            Utils.ConfigureLogger(_logPath, args);
-
-            if (!Utils.IsAdministrator()) 
-            {
-                string message = "WinCertes.exe must be launched as Administrator with elevated permissions";
-                _logger.Error(message);
-                Thread.Sleep(1000);
-                Utils.AdminRelauncher();
-            }
-            // Merge command line parameters with registry defaults
-            int result = HandleOptions(args);
-            if (result != 0 )
-                return MainExit(result);
-
-            // Display settings, don't create or renew the certificate
-            if (_show)
-            {
-                _winCertesOptions.DisplayOptions(); 
-                return MainExit(SUCCESS);
-            }
-
-            // Helper to create the DNS keys
-            if (_creatednskeys)
-            {
-                _winCertesOptions.WriteDnsOptions();
-                return MainExit(SUCCESS);
-            }
-
-            // Reset is a full reset!
-            if (_reset)
-            {
-                Console.WriteLine("\nWARNING: You should revoke the certificate before deleting it from the registry\nDelete [{0}]?\nPress Enter when ready...", _winCertesOptions.Registry.FullRegistryKey);
-                Console.ReadLine();
-                _winCertesOptions.Registry.DeleteAllParameters();
-                Utils.DeleteScheduledTasks();
-                return MainExit(SUCCESS);
-            }
-
-
-            _logger.Info("Initialisation successful, processing your request...");
-            string taskName = null;
-            if (_periodic) taskName = Utils.DomainsToFriendlyName(_winCertesOptions.Domains);
-
-            // Initialization and renewal/revocation handling
-            try
-            {
-                InitCertesWrapper(_winCertesOptions);
-            }
-            catch (Exception e)
-            {
-                _logger.Error(e.Message);
-                return MainExit(ERROR);
-            }
-            if (_winCertesOptions.Revoke > -1)
-            { 
-                RevokeCert(_winCertesOptions.Domains, _winCertesOptions.Revoke); 
-                return MainExit(SUCCESS); 
-            }
-            // default mode: enrollment/renewal. check if there's something to be done
-            // note that in any case, we want to be able to set the scheduled task (won't do anything if taskName is null)
-            if (!IsThereCertificateAndIsItToBeRenewed(_winCertesOptions.Domains)) 
-            { 
-                Utils.CreateScheduledTask(taskName, _winCertesOptions.Domains, _extra); 
-                return MainExit(SUCCESS); 
-            }
-
-            // Now the real stuff: we register the order for the domains, and have them validated by the ACME service
-            IHTTPChallengeValidator httpChallengeValidator = HTTPChallengeValidatorFactory.GetHTTPChallengeValidator(_winCertesOptions.Standalone, _winCertesOptions.HttpPort, _winCertesOptions.WebRoot);
-            IDNSChallengeValidator dnsChallengeValidator = DNSChallengeValidatorFactory.GetDNSChallengeValidator();
-            if ((httpChallengeValidator == null) && (dnsChallengeValidator == null))
-            {
-                WriteErrorMessageWithUsage(_options, "Specify either an HTTP or a DNS validation method."); 
-                return MainExit(ERROR_MISSING_HTTP_DNS);
-            }
-            if (!(Task.Run(() => _certesWrapper.RegisterNewOrderAndVerify(_winCertesOptions.Domains, httpChallengeValidator, dnsChallengeValidator)).GetAwaiter().GetResult()))
-            {
-                if (httpChallengeValidator != null) httpChallengeValidator.EndAllChallengeValidations();
-                return MainExit(ERROR);
-            }
-            if (httpChallengeValidator != null) httpChallengeValidator.EndAllChallengeValidations();
-
-            // We get the certificate from the ACME service
-            string pfxFullFileName = _winCertesPath + "\\" + _winCertesOptions.CertificateName;
-            var pfxName = Task.Run(() => 
-                    _certesWrapper.RetrieveCertificate(_winCertesOptions.Domains, pfxFullFileName, Utils.DomainsToFriendlyName(_winCertesOptions.Domains), _winCertesOptions.ExportPem)
-                ).GetAwaiter().GetResult();
-
-            if (pfxName == null)
-                return MainExit(ERROR);
-
-            _logger.Info("Certificate file creation complete. Generate authenticated PFX");
-            AuthenticatedPFX pfx = new AuthenticatedPFX(pfxFullFileName, _winCertesOptions.PfxPassword);
-            CertificateStorageManager certificateStorageManager = new CertificateStorageManager(pfx, (_winCertesOptions.Csp == null) && (!_winCertesOptions.noCsp));
-
-            // Let's process the PFX into Windows Certificate object.
-            certificateStorageManager.ProcessPFX();
-
-            // and we write its information to the WinCertes configuration
-            RegisterCertificateIntoConfiguration(certificateStorageManager.Certificate, _winCertesOptions.Domains);
-
-            // Import the certificate into the Windows store
-            if (!_winCertesOptions.noCsp) certificateStorageManager.ImportCertificateIntoCSP(_winCertesOptions.Csp);
-
-            // Bind certificate to IIS Site (won't do anything if option is null)
-            Utils.BindCertificateForIISSite(certificateStorageManager.Certificate, _winCertesOptions.BindName);
-            // Execute PowerShell Script (won't do anything if option is null)
-            Utils.ExecutePowerShell(_winCertesOptions.ScriptFile, pfx);
-            // Create the AT task that will execute WinCertes periodically (won't do anything if taskName is null)
-            Utils.CreateScheduledTask(taskName, _winCertesOptions.Domains, _extra);
-
-            // Let's delete the PFX file, if export was not enabled
-            if (!_winCertesOptions.ExportPem)
-            {
-                RemoveFileAndLog(pfx.PfxFullPath);
-            }
-
-            return MainExit(SUCCESS);
         }
 
         /// <summary>
@@ -239,16 +111,36 @@ namespace WinCertes
         /// Initializes WinCertes Directory path on the filesystem. The certificate may be overridden through registry.
         /// </summary>
         /// <param name="path">Preferred path for certificate files. Default is %PROGRAMDATA%\WinCertes</param>
-        private static string InitWinCertesDirectoryPath(string path = null)
+        private static void InitWinCertesDirectoryPath(string path = null)
         {
             if (path == null)
-                path = Program._winCertesOptions.CertificatePath;
+                _winCertesPath = Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData) + "\\WinCertes";
             else
-            if (!System.IO.Directory.Exists(path))
+                _winCertesPath = path;
+            if (!System.IO.Directory.Exists(_winCertesPath))
             {
-                System.IO.Directory.CreateDirectory(path);
+                System.IO.Directory.CreateDirectory(_winCertesPath);
             }
-            return path;
+            _certTmpPath = _winCertesPath + "\\CertsTmp";
+            if (!System.IO.Directory.Exists(_certTmpPath))
+            {
+                System.IO.Directory.CreateDirectory(_certTmpPath);
+            }
+            // We fix the permissions for the certs temporary directory
+            // so that no user can have access to it
+            DirectoryInfo winCertesTmpDi = new DirectoryInfo(_certTmpPath);
+            DirectoryInfo programDataDi = new DirectoryInfo(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData));
+            DirectorySecurity programDataDs = programDataDi.GetAccessControl(AccessControlSections.All);
+            DirectorySecurity winCertesTmpDs = winCertesTmpDi.GetAccessControl(AccessControlSections.All);
+            winCertesTmpDs.SetAccessRuleProtection(true, false);
+            foreach (FileSystemAccessRule accessRule in programDataDs.GetAccessRules(true, true, typeof(NTAccount)))
+            {
+                if (accessRule.IdentityReference.Value.IndexOf("Users", StringComparison.InvariantCultureIgnoreCase) < 0)
+                {
+                    winCertesTmpDs.AddAccessRule(accessRule);
+                }
+            }
+            winCertesTmpDi.SetAccessControl(winCertesTmpDs);
         }
 
         /// <summary>
@@ -288,18 +180,134 @@ namespace WinCertes
         /// Removes specified files and logs it
         /// </summary>
         /// <param name="path"></param>
-        private static void RemoveFileAndLog(string path)
+        private static void RemoveFileAndLog(AuthenticatedPFX pfx)
+            {
+            File.Delete(pfx.PfxFullPath);
+            File.Delete(pfx.PemCertPath);
+            File.Delete(pfx.PemKeyPath);
+            _logger.Info($"Removed files from filesystem: {pfx.PfxFullPath}, {pfx.PemCertPath}, {pfx.PemKeyPath}");
+        }
+
+        /// <summary>
+        /// Main programme
+        /// </summary>
+        /// <param name="args">WinCertes command line arguments</param>
+        /// <returns>Zero if successul, error code otherwise</returns>
+        private static int Main(string[] args)
         {
+            // WinCertes Certificate path...
+            InitWinCertesDirectoryPath();
+            Utils.ConfigureLogger(_logPath);
+
+            if (!Utils.IsAdministrator())
+            {
+                string message = "WinCertes.exe must be launched as Administrator with elevated permissions";
+                _logger.Error(message);
+                Thread.Sleep(1000);
+                Utils.AdminRelauncher();
+            }
+            // Merge command line parameters with registry defaults
+            // TODO: Revamp this completely to use simple command line (like aloopkin\WinCertes) or configuration file
+            int result = HandleOptions(args);
+            if (result != 0)
+                return MainExit(result);
+
+            // Display settings, don't create or renew the certificate
+            if (_show)
+            {
+                _winCertesOptions.DisplayOptions();
+                return MainExit(SUCCESS);
+            }
+
+            // Helper to create the DNS keys
+            if (_creatednskeys)
+            {
+                _winCertesOptions.WriteDnsOptions();
+                return MainExit(SUCCESS);
+            }
+
+            // Reset is a full reset!
+            if (_reset)
+            {
+                Console.WriteLine("\nWARNING: You should revoke the certificate before deleting it from the registry\nDelete [{0}]?\nPress Enter when ready...", _winCertesOptions.Registry.FullRegistryKey);
+                Console.ReadLine();
+                _winCertesOptions.Registry.DeleteAllParameters();
+                Utils.DeleteScheduledTasks();
+                return MainExit(SUCCESS);
+            }
+
+
+            _logger.Info("Initialisation successful, processing your request...");
+            string taskName = null;
+            if (_periodic) taskName = Utils.DomainsToFriendlyName(_winCertesOptions.Domains);
+
+            // Initialization and renewal/revocation handling
             try
             {
-                File.Delete(path);
-                _logger.Info($"Removed file from filesystem: {path}");
+                InitCertesWrapper(_winCertesOptions);
             }
             catch (Exception e)
             {
                 _logger.Error(e.Message);
+                return MainExit(ERROR);
             }
-        }
+            if (_winCertesOptions.Revoke > -1)
+            {
+                RevokeCert(_winCertesOptions.Domains, _winCertesOptions.Revoke);
+                return MainExit(SUCCESS);
+            }
+            // default mode: enrollment/renewal. check if there's something to be done
+            // note that in any case, we want to be able to set the scheduled task (won't do anything if taskName is null)
+            if (!IsThereCertificateAndIsItToBeRenewed(_winCertesOptions.Domains))
+            {
+                Utils.CreateScheduledTask(taskName, _winCertesOptions.Domains, _extra);
+                return MainExit(SUCCESS);
+            }
 
+            // Now the real stuff: we register the order for the domains, and have them validated by the ACME service
+            IHTTPChallengeValidator httpChallengeValidator = HTTPChallengeValidatorFactory.GetHTTPChallengeValidator(_winCertesOptions.Standalone, _winCertesOptions.HttpPort, _winCertesOptions.WebRoot);
+            IDNSChallengeValidator dnsChallengeValidator = DNSChallengeValidatorFactory.GetDNSChallengeValidator();
+            if ((httpChallengeValidator == null) && (dnsChallengeValidator == null))
+            {
+                WriteErrorMessageWithUsage(_options, "Specify either an HTTP or a DNS validation method.");
+                return MainExit(ERROR_MISSING_HTTP_DNS);
+            }
+            if (!(Task.Run(() => _certesWrapper.RegisterNewOrderAndVerify(_winCertesOptions.Domains, httpChallengeValidator, dnsChallengeValidator)).GetAwaiter().GetResult()))
+            {
+                if (httpChallengeValidator != null) httpChallengeValidator.EndAllChallengeValidations();
+                return MainExit(ERROR);
+            }
+            if (httpChallengeValidator != null) httpChallengeValidator.EndAllChallengeValidations();
+
+            // We get the certificate from the ACME service
+            string pfxFullFileName = _winCertesPath + "\\" + _winCertesOptions.CertificateName;
+            var pfx = Task.Run(() =>
+                    _certesWrapper.RetrieveCertificate(_winCertesOptions.Domains, pfxFullFileName, Utils.DomainsToFriendlyName(_winCertesOptions.Domains), _winCertesOptions.ExportPem)
+                ).GetAwaiter().GetResult();
+
+            if (pfx == null) return MainExit(ERROR);
+            CertificateStorageManager certificateStorageManager = new CertificateStorageManager(pfx, (_winCertesOptions.Csp == null) && (!_winCertesOptions.noCsp));
+            // Let's process the PFX into Windows Certificate object.
+            certificateStorageManager.ProcessPFX();
+            // and we write its information to the WinCertes configuration
+            RegisterCertificateIntoConfiguration(certificateStorageManager.Certificate, _winCertesOptions.Domains);
+            // Import the certificate into the Windows store
+            if (!_winCertesOptions.noCsp) certificateStorageManager.ImportCertificateIntoCSP(_winCertesOptions.Csp);
+
+            // Bind certificate to IIS Site (won't do anything if option is null)
+            Utils.BindCertificateForIISSite(certificateStorageManager.Certificate, _winCertesOptions.BindName);
+            // Execute PowerShell Script (won't do anything if option is null)
+            Utils.ExecutePowerShell(_winCertesOptions.ScriptFile, pfx);
+            // Create the AT task that will execute WinCertes periodically (won't do anything if taskName is null)
+            Utils.CreateScheduledTask(taskName, _winCertesOptions.Domains, _extra);
+
+            // Let's delete the PFX file, if export was not enabled
+            if (!_winCertesOptions.ExportPem)
+            {
+                RemoveFileAndLog(pfx);
+            }
+
+            return MainExit(SUCCESS);
+        }
     }
 }

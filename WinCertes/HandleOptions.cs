@@ -20,7 +20,7 @@ namespace WinCertes
         //internal static RegistryConfig _config;
         internal static bool _debug = false;
         internal static bool _creatednskeys = false;
-        internal static bool _extra = false;
+        internal static int _extra = -1;
         internal static bool _periodic = false;
         internal static bool _reset = false;
         internal static bool _show = false;
@@ -77,12 +77,16 @@ namespace WinCertes
                 { "p|periodic", "Should WinCertes create the Windows Scheduler task to handle certificate renewal (default=no)", v => _periodic = (v != null) },
                 { "b|bindname=", "IIS site name to bind the certificate to,       e.g. \"Default Web Site\". Defaults to no binding.", v => _winCertesOptions.BindName = v },
                 { "f|scriptfile=", "PowerShell Script file e.g. \"C:\\Temp\\script.ps1\" to execute upon successful enrollment (default=none)", v => _winCertesOptions.ScriptFile = v },
-                { "x|exportcerts", "Should WinCertes export the certificates including PEM format.", v => _winCertesOptions.ExportPem = (v != null) },
                 { "a|standalone", "Activate WinCertes internal WebServer for validation. Activates HTTP validation mode. WARNING: it will use port 80 unless -l is specified.", v => _winCertesOptions.Standalone = (v != null) },
                 { "r|revoke:", "Should WinCertes revoke the certificate identified by its domains (to be used only with -d or -n). {REASON} is an optional integer between 0 and 5.", (int v) => _winCertesOptions.Revoke = v },
                 { "k|csp=", "Import the certificate into specified csp. By default WinCertes imports in the default CSP.", v => _winCertesOptions.Csp = v },
                 { "t|renewal=", "Trigger certificate renewal {N} days before expiration, default 30", (int v) => _winCertesOptions.RenewalDelay = v },
                 { "l|listenport=", "Listen on port {N} in standalone mode (for use with -a switch, default 80)", (int v) => _winCertesOptions.HttpPort = v },
+                { "show", "Show current configuration parameters and exit", v=> _show = (v != null ) },
+                { "reset", "Reset all configuration parameters for --certname and exit", v=> _reset = (v != null ) },
+                { "extra:", "manages additional certificate(s) instead of the default one, with its own settings. Add an integer index optionally to manage more certs.", (int v) => _extra = v },
+                { "no-csp", "Disable import of the certificate into CSP. Use with caution, at your own risk. REVOCATION WILL NOT WORK IN THAT MODE.", v=> _winCertesOptions.noCsp = (v != null) },
+                { "x|exportcerts", "Should WinCertes export the certificates including PEM format.", v => _winCertesOptions.ExportPem = (v != null) },
                 { "dnscreatekeys", "Create all DNS values in the registry and exit. Use with --certname. Manually edit registry or include on command line", v=> _creatednskeys= (v != null ) },
                 { "dnstype=", "DNS Validator type: acme-dns, win-dns", v => _winCertesOptions.DNSValidatorType = v },
                 { "dnsurl=", "DNS Server URL: http://blah.net", v => _winCertesOptions.DNSServerURL = v },
@@ -93,11 +97,7 @@ namespace WinCertes
                 { "dnssubdomain=", "DNS Server SubDomain", v => _winCertesOptions.DNSServerSubDomain = v },
                 { "dnszone=", "DNS Server Zone", v => _winCertesOptions.DNSServerZone = v },
                 { "debug", "Enable extra debug logging", v=> _debug= (v != null ) },
-                { "extra", "Deprecated: Manages certificate name \"extra\". Please use -n instead", v=> _extra = (v != null ) },
-                { "no-csp", "Disable import of the certificate into CSP. Use with caution, at your own risk. REVOCATION WILL NOT WORK IN THAT MODE.", v=> _winCertesOptions.noCsp = (v != null) },
-                { "password=", "Certificate password min 16 characters (default=random)", v => _winCertesOptions.PfxPassword = v },
-                { "reset", "Reset all configuration parameters for --certname and exit", v=> _reset = (v != null ) },
-                { "show", "Show current configuration parameters and exit", v=> _show = (v != null ) }
+                { "password=", "Certificate password min 16 characters (default=random)", v => _winCertesOptions.PfxPassword = v }
             };
 
             // Merge options with default/existing configuration
@@ -129,7 +129,7 @@ namespace WinCertes
                 // Backward compatibility: Process default registry with command line parameters and adjust accordingly
                 // Ideally we'd like to retire the original setup (default certificate & one extra)
                 // by having all certificates in their own registry key.
-                if (_extra)
+                if (_extra > -1)
                 {
                     // Non default certificate
                     if (newName != null)
@@ -141,7 +141,10 @@ namespace WinCertes
                     else
                     {
                         // Legacy support for "extra"
-                        newName = "extra";
+                        string extraIndex = "";
+                        if (_extra > 1)
+                            extraIndex = _extra.ToString();
+                        newName = "extra" + extraIndex;
                         _winCertesOptions.CertificateName = newName;
                         // Force registry reload - create new Certificate store
                         _winCertesOptions.IsDefaultCertificate = false;
