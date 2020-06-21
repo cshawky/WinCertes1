@@ -73,41 +73,47 @@ Command Line Options
 
 ```dos
 WinCertes.exe:
-  -n, --certname=VALUE       Unique Certificate name excluding file extension  
-                               e.g. "wincertes.com" (default=first domain name)
-  -s, --service=VALUE        ACME Service URI to be used (optional, defaults to
-                               Let's Encrypt)
-  -e, --email=VALUE          Account email to be used for ACME requests  (
+  -s, --service=VALUE        the ACME Service URI to be used (optional,
+                               defaults to Let's Encrypt)
+  -e, --email=VALUE          the account email to be used for ACME requests (
                                optional, defaults to no email)
-  -d, --domain=VALUE         Domain(s) to enroll (mandatory)
-  -w, --webserver[=ROOT]     Toggles the local web server use and sets its ROOT
+  -d, --domain=VALUE         the domain(s) to enroll (mandatory)
+  -w, --webserver[=ROOT]     toggles the local web server use and sets its ROOT
                                directory (default c:\inetpub\wwwroot).
                                Activates HTTP validation mode.
-  -p, --periodic             Should WinCertes create the Windows Scheduler task
+  -p, --periodic             should WinCertes create the Windows Scheduler task
                                to handle certificate renewal (default=no)
-  -b, --bindname=VALUE       IIS site name to bind the certificate to,       e.
-                               g. "Default Web Site". Defaults to no binding.
+  -b, --bindname=VALUE       IIS site name to bind the certificate to, e.g. "
+                               Default Web Site". Defaults to no binding.
   -f, --scriptfile=VALUE     PowerShell Script file e.g. "C:\Temp\script.ps1"
                                to execute upon successful enrollment (default=
                                none)
-  -x, --exportcerts          Should WinCertes export the certificates including
-                               PEM format.
-  -a, --standalone           Activate WinCertes internal WebServer for
+  -a, --standalone           should WinCertes create its own WebServer for
                                validation. Activates HTTP validation mode.
                                WARNING: it will use port 80 unless -l is
                                specified.
-  -r, --revoke[=REASON]      Should WinCertes revoke the certificate identified
-                               by its domains (to be used only with -d or -n).
-                               REASON is an optional integer between 0 and 5.
-  -k, --csp=VALUE            Import the certificate into specified csp. By
+  -r, --revoke[=REASON]      should WinCertes revoke the certificate identified
+                               by its domains (to be used only with -d). REASON
+                               is an optional integer between 0 and 5.
+  -k, --csp=VALUE            import the certificate into specified csp. By
                                default WinCertes imports in the default CSP.
-  -t, --renewal=N            Trigger certificate renewal N days before
-                               expiration, default 30
-  -l, --listenport=N         Listen on port N in standalone mode (for use with -
+  -t, --renewal=N            trigger certificate renewal N days before
+                               expiration
+  -l, --listenport=N         listen on port N in standalone mode (for use with -
                                a switch, default 80)
-      --dnscreatekeys        Create all DNS values in the registry and exit.
-                               Use with --certname. Manually edit registry or
-                               include on command line
+      --show                 show current configuration parameters
+      --reset                reset all configuration parameters
+      --extra[=VALUE]        manages additional certificate(s) instead of the
+                               default one, with its own settings. Add an
+                               integer index optionally to manage more certs.
+      --no-csp               does not import the certificate into CSP. Use with
+                               caution, at your own risks
+
+cshawky/wincertes:
+  -n, --certname=VALUE       Unique Certificate name, also used as cert file name (exclude extension)
+                               e.g. "wincertes.com" (default name=first domain name)
+      --dnscreatekeys        Create all DNS values in the registry and exit. helper for registry:
+                               Use with --certname. Manually edit registry or include parameters below on the command line
       --dnstype=VALUE        DNS Validator type: acme-dns, win-dns
       --dnsurl=VALUE         DNS Server URL: http://blah.net
       --dnshost=VALUE        DNS Server Host
@@ -117,17 +123,9 @@ WinCertes.exe:
       --dnssubdomain=VALUE   DNS Server SubDomain
       --dnszone=VALUE        DNS Server Zone
       --debug                Enable extra debug logging
-      --extra                Deprecated: Manages certificate name "extra".
-                               Please use -n instead
-      --no-csp               Disable import of the certificate into CSP. Use
-                               with caution, at your own risk. REVOCATION WILL
-                               NOT WORK IN THAT MODE.
-      --password=VALUE       Certificate password min 16 characters (default=
-                               random)
-      --reset                Reset all configuration parameters for --certname
-                               and exit
-      --show                 Show current configuration parameters and exit
-
+      --extra[=VALUE]        Please use -n instead for support of future file instead of registry
+      --password=VALUE       Certificate password min 16 characters (default=random)
+      --reset                Reset all configuration parameters for --certname and exit
 
 Typical usage:
 
